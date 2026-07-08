@@ -265,6 +265,10 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	o, err := f.withQuota(ctx, src.Remote(), src.Size(), func() (fs.Object, error) {
 		return f.Fs.Put(ctx, in, src, options...)
 	})
+	if err == nil && o != nil {
+		// Ensure file has world-readable/writable permissions for multi-container access
+		_ = f.ensureFileWritable(ctx, o)
+	}
 	return f.wrapObject(o, err)
 }
 
@@ -277,6 +281,10 @@ func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, opt
 	o, err := f.withQuota(ctx, src.Remote(), src.Size(), func() (fs.Object, error) {
 		return do(ctx, in, src, options...)
 	})
+	if err == nil && o != nil {
+		// Ensure file has world-readable/writable permissions for multi-container access
+		_ = f.ensureFileWritable(ctx, o)
+	}
 	return f.wrapObject(o, err)
 }
 
@@ -289,6 +297,10 @@ func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 	o, err := f.withQuota(ctx, src.Remote(), src.Size(), func() (fs.Object, error) {
 		return do(ctx, in, src, options...)
 	})
+	if err == nil && o != nil {
+		// Ensure file has world-readable/writable permissions for multi-container access
+		_ = f.ensureFileWritable(ctx, o)
+	}
 	return f.wrapObject(o, err)
 }
 
@@ -306,6 +318,56 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		return do(ctx, srcObj.Object, remote)
 	})
 	return f.wrapObject(o, err)
+}
+
+// Mkdir makes a directory, ensuring world-writable permissions for multi-container access.
+func (f *Fs) Mkdir(ctx context.Context, dir string) error {
+	if err := f.Fs.Mkdir(ctx, dir); err != nil {
+		return err
+	}
+	// Ensure directory is world-writable for multi-container access (e.g., Docker volume driver)
+	if f.Fs.Features().IsLocal {
+		return f.ensureDirWritable(ctx, dir)
+	}
+	return nil
+}
+
+// ensureDirWritable ensures a directory has world-writable permissions (0777).
+// This is necessary for tmpfs volumes accessed by multiple containers with different UIDs.
+func (f *Fs) ensureDirWritable(ctx context.Context, dir string) error {
+	// Try to set directory permissions through metadata if supported
+	if f.Fs.Features().WriteDirMetadata {
+		// Set mode to 0777 (rwxrwxrwx)
+		metadata := fs.Metadata{
+			"mode": "0777",
+		}
+		if do := f.Fs.Features().MkdirMetadata; do != nil {
+			_, err := do(ctx, dir, metadata)
+			// Don't fail if metadata can't be set, just return nil
+			_ = err
+		}
+	}
+	return nil
+}
+
+// ensureFileWritable ensures a file has world-readable/writable permissions (0666).
+// This is necessary for tmpfs volumes accessed by multiple containers with different UIDs.
+func (f *Fs) ensureFileWritable(ctx context.Context, o fs.Object) error {
+	if o == nil {
+		return nil
+	}
+	// Try to set file permissions through metadata if supported
+	do, ok := o.(fs.SetMetadataer)
+	if ok {
+		// Set mode to 0666 (rw-rw-rw-)
+		metadata := fs.Metadata{
+			"mode": "0666",
+		}
+		err := do.SetMetadata(ctx, metadata)
+		// Don't fail if metadata can't be set, just continue
+		_ = err
+	}
+	return nil
 }
 
 // Purge removes a directory and all of its contents inside the wrapped root.
@@ -370,6 +432,11 @@ func (f *Fs) DirSetModTime(ctx context.Context, dir string, modTime time.Time) e
 // MkdirMetadata makes a directory with metadata.
 func (f *Fs) MkdirMetadata(ctx context.Context, dir string, metadata fs.Metadata) (fs.Directory, error) {
 	if do := f.Fs.Features().MkdirMetadata; do != nil {
+		// Ensure world-writable permissions for multi-container access
+		if metadata == nil {
+			metadata = fs.Metadata{}
+		}
+		metadata["mode"] = "0777"
 		return do(ctx, dir, metadata)
 	}
 	return nil, fs.ErrorNotImplemented
@@ -796,6 +863,10 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	_, err := o.f.withQuota(ctx, src.Remote(), src.Size(), func() (fs.Object, error) {
 		return o.Object, o.Object.Update(ctx, in, src, options...)
 	})
+	if err == nil {
+		// Ensure file has world-readable/writable permissions for multi-container access
+		_ = o.f.ensureFileWritable(ctx, o.Object)
+	}
 	return err
 }
 
