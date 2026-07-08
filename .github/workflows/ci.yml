@@ -12,6 +12,11 @@ on:
 
 env:
   CI_LINUX_ONLY: "true"
+  DEBIAN_FRONTEND: noninteractive
+  CI_LINUX_BOOTSTRAP_PACKAGES: >-
+    build-essential ca-certificates curl fuse3 git git-annex
+    git-annex-remote-rclone jq kmod libfuse-dev nfs-common
+    pkg-config rpm tar unzip xz-utils zip zstd
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -35,6 +40,62 @@ jobs:
       linux_matrix: ${{ steps.config.outputs.linux_matrix }}
       extra_matrix: ${{ steps.config.outputs.extra_matrix }}
     steps:
+      - &bootstrap_linux_runner
+        name: Bootstrap Linux runner
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "::error::Linux runner bootstrap expects apt-get; install CI_LINUX_BOOTSTRAP_PACKAGES in the runner image or update this workflow for the runner OS."
+            exit 1
+          fi
+
+          read -r -a packages <<< "$CI_LINUX_BOOTSTRAP_PACKAGES"
+          missing=()
+          for package in "${packages[@]}"; do
+            if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
+              missing+=("$package")
+            fi
+          done
+
+          if (( ${#missing[@]} )); then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends "${missing[@]}"
+          else
+            echo "Linux runner packages already installed."
+          fi
+
+          modprobe_bin="$(command -v modprobe || true)"
+          if [ -z "$modprobe_bin" ]; then
+            for candidate in /usr/sbin/modprobe /sbin/modprobe; do
+              if [ -x "$candidate" ]; then
+                modprobe_bin="$candidate"
+                break
+              fi
+            done
+          fi
+
+          if [ -n "$modprobe_bin" ]; then
+            sudo "$modprobe_bin" fuse || echo "::warning::Unable to load the fuse kernel module; continuing with the existing /dev/fuse state."
+          else
+            echo "::error::modprobe is unavailable after installing kmod."
+            exit 1
+          fi
+
+          if [ -e /dev/fuse ]; then
+            sudo chmod 666 /dev/fuse
+          else
+            echo "::warning::/dev/fuse is not available on this runner; mount-dependent tasks may fail."
+          fi
+
+          if [ -e /etc/fuse.conf ]; then
+            sudo chown "root:$(id -gn)" /etc/fuse.conf
+          else
+            echo "::warning::/etc/fuse.conf was not created by fuse3."
+          fi
+
       - name: Determine mode and matrix
         id: config
         run: |
@@ -82,6 +143,8 @@ jobs:
     permissions:
       contents: read
     steps:
+      - *bootstrap_linux_runner
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -111,16 +174,6 @@ jobs:
           echo 'BUILD_FLAGS=${{ matrix.build_flags }}' >> $GITHUB_ENV
           echo 'BUILD_ARGS=${{ matrix.build_args }}' >> $GITHUB_ENV
           if [[ "${{ matrix.cgo }}" != "" ]]; then echo 'CGO_ENABLED=${{ matrix.cgo }}' >> $GITHUB_ENV ; fi
-
-      - name: Install Libraries on Linux
-        if: matrix.os == 'self-hosted'
-        shell: bash
-        run: |
-          sudo modprobe fuse
-          sudo chmod 666 /dev/fuse
-          sudo chown root:$USER /etc/fuse.conf
-          sudo apt-get update
-          sudo apt-get install -y fuse3 libfuse-dev rpm pkg-config git-annex git-annex-remote-rclone nfs-common
 
       - name: Install Libraries on macOS
         if: matrix.os == 'macos-latest'
@@ -184,6 +237,8 @@ jobs:
     permissions:
       contents: read
     steps:
+      - *bootstrap_linux_runner
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -270,6 +325,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - *bootstrap_linux_runner
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -334,6 +391,8 @@ jobs:
     permissions:
       pull-requests: write
     steps:
+      - *bootstrap_linux_runner
+
       - name: Comment PR with artifact link
         uses: actions/github-script@v7
         with:
@@ -356,6 +415,12 @@ jobs:
     permissions:
       packages: write
     steps:
+      - *bootstrap_linux_runner
+
+      - name: Verify Docker is available
+        shell: bash
+        run: docker version
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -508,6 +573,12 @@ jobs:
       contents: read
       packages: write
     steps:
+      - *bootstrap_linux_runner
+
+      - name: Verify Docker is available
+        shell: bash
+        run: docker version
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
