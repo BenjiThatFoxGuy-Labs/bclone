@@ -90,11 +90,17 @@ type Fs struct {
 	opt        Options
 	localRoot  string
 	rootID     string
+	dirs       map[string]virtualDir
+	dirsMu     sync.Mutex
 	atexit     atexit.FnHandle
 	cancel     context.CancelFunc
 	shutdownMu sync.Mutex
 	shutdown   bool
 	quotaMu    sync.Mutex
+}
+
+type virtualDir struct {
+	modTime time.Time
 }
 
 // Object wraps an object from the underlying backend.
@@ -133,6 +139,7 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 		name: name,
 		root: rpath,
 		opt:  *opt,
+		dirs: make(map[string]virtualDir),
 	}
 	if err == fs.ErrorIsFile {
 		f.root = path.Dir(f.root)
@@ -143,6 +150,10 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 
 	if err := f.validateBackingRoot(); err != nil {
 		fs.Errorf(f, "%v", err)
+		return nil, err
+	}
+
+	if err := f.ensureRoot(ctx); err != nil {
 		return nil, err
 	}
 
@@ -166,6 +177,7 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 		DirModTimeUpdatesOnWrite: true,
 		PartialUploads:           true,
 	}).Fill(ctx, f).Mask(ctx, f.Fs).WrapsFs(f, f.Fs)
+	f.features.CanHaveEmptyDirectories = true
 	f.features.ListP = f.ListP
 
 	if f.opt.PurgeOnStart {
@@ -563,7 +575,27 @@ func (f *Fs) purgeAll(ctx context.Context, why string) error {
 	if err := ignoreNotFound(operations.Purge(ctx, f.Fs, "")); err != nil {
 		return err
 	}
-	return f.Fs.Mkdir(ctx, "")
+	// Ensure the root directory exists after purging.
+	if err := f.Fs.Mkdir(ctx, ""); err != nil {
+		// Ignore error if the directory already exists.
+		if _, err2 := f.Fs.Stat(ctx, ""); err2 == nil {
+			return nil
+		}
+		return fmt.Errorf("failed to create tmpfs backing root after purge: %w", err)
+	}
+	return nil
+}
+
+// ensureRoot makes sure the root directory exists in the wrapped remote.
+func (f *Fs) ensureRoot(ctx context.Context) error {
+	if err := f.Fs.Mkdir(ctx, ""); err != nil {
+		// Ignore error if the directory already exists.
+		if _, err2 := f.Fs.Stat(ctx, ""); err2 == nil {
+			return nil
+		}
+		return fmt.Errorf("failed to create tmpfs backing root: %w", err)
+	}
+	return nil
 }
 
 func (f *Fs) maxSizeEnabled() bool {
