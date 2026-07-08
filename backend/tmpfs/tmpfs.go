@@ -575,25 +575,74 @@ func (f *Fs) purgeAll(ctx context.Context, why string) error {
 	if err := ignoreNotFound(operations.Purge(ctx, f.Fs, "")); err != nil {
 		return err
 	}
-	// Ensure the root directory exists after purging.
-	if err := f.Fs.Mkdir(ctx, ""); err != nil {
-		// Ignore error if the directory already exists.
-		if _, err2 := f.Fs.Stat(ctx, ""); err2 == nil {
-			return nil
-		}
+	// Ensure the root directory exists again after purging.
+	if err := f.ensureRoot(ctx); err != nil {
 		return fmt.Errorf("failed to create tmpfs backing root after purge: %w", err)
 	}
 	return nil
 }
 
-// ensureRoot makes sure the root directory exists in the wrapped remote.
+// ensureRoot makes sure the root directory exists in the wrapped remote,
+// creating it (along with any missing parent directories) if it doesn't
+// exist yet.
 func (f *Fs) ensureRoot(ctx context.Context) error {
-	if err := f.Fs.Mkdir(ctx, ""); err != nil {
-		// Ignore error if the directory already exists.
-		if _, err2 := f.Fs.Stat(ctx, ""); err2 == nil {
+	// A plain Mkdir of the root is enough for most backends, and per the
+	// fs.Fs contract it shouldn't error if the directory already exists.
+	if err := f.Fs.Mkdir(ctx, ""); err == nil {
+		return nil
+	}
+	// The Mkdir failed. This can happen when a parent directory doesn't
+	// exist yet (e.g. a per-container "{name}/_work" subpath), or when a
+	// concurrent process is racing to create the same directory. Create the
+	// full path including parents, then treat an already-existing directory
+	// as success.
+	if err := f.mkdirBackingParents(ctx); err != nil {
+		if f.backingRootExists(ctx) {
 			return nil
 		}
 		return fmt.Errorf("failed to create tmpfs backing root: %w", err)
+	}
+	return nil
+}
+
+// backingRootExists reports whether the wrapped root directory currently
+// exists. It is used to tolerate backends that return an error from Mkdir
+// when the directory already exists, and races where another process created
+// it first.
+func (f *Fs) backingRootExists(ctx context.Context) bool {
+	_, err := f.Fs.List(ctx, "")
+	return err == nil
+}
+
+// mkdirBackingParents creates the wrapped root directory and every missing
+// parent directory leading up to it. Object-storage backends treat
+// directories as virtual and no-op, while path-based backends (local, sftp,
+// ...) get each level created in turn.
+func (f *Fs) mkdirBackingParents(ctx context.Context) error {
+	remoteName, remotePath, err := fspath.SplitFs(fs.ConfigString(f.Fs))
+	if err != nil {
+		return err
+	}
+	remotePath = strings.Trim(remotePath, "/")
+	// Without a named remote (local paths) or with an empty path there are no
+	// separate parents to create; fall back to a plain Mkdir of the root.
+	if remoteName == "" || remotePath == "" {
+		return f.Fs.Mkdir(ctx, "")
+	}
+	rootFs, err := cache.Get(ctx, remoteName)
+	if err != nil && err != fs.ErrorIsFile {
+		return err
+	}
+	dir := ""
+	for _, segment := range strings.Split(remotePath, "/") {
+		if dir == "" {
+			dir = segment
+		} else {
+			dir += "/" + segment
+		}
+		if err := rootFs.Mkdir(ctx, dir); err != nil {
+			return err
+		}
 	}
 	return nil
 }
