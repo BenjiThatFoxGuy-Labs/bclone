@@ -371,22 +371,33 @@ jobs:
           IMAGE_REF="ghcr.io/${IMAGE}"
           case "${{ needs.setup.outputs.mode }}" in
             pr)
-              TAGS="${IMAGE_REF}:pr-${{ github.event.pull_request.number }}"
+              PRIMARY_TAG="pr-${{ github.event.pull_request.number }}"
+              ALIAS_TAG=""
+              TAGS="${IMAGE_REF}:${PRIMARY_TAG}"
               ;;
             nightly)
-              TAGS="${IMAGE_REF}:nightly"
+              PRIMARY_TAG="nightly"
+              ALIAS_TAG=""
+              TAGS="${IMAGE_REF}:${PRIMARY_TAG}"
               ;;
             release)
               REF_TAG="${GITHUB_REF#refs/tags/}"
-              TAGS="${IMAGE_REF}:${REF_TAG}"$'\n'"${IMAGE_REF}:latest"
+              PRIMARY_TAG="${REF_TAG}"
+              ALIAS_TAG="latest"
+              TAGS="${IMAGE_REF}:${PRIMARY_TAG}"$'\n'"${IMAGE_REF}:${ALIAS_TAG}"
               ;;
             snapshot)
               BRANCH="${GITHUB_REF#refs/heads/}"
               BRANCH="${BRANCH//\//-}"
-              TAGS="${IMAGE_REF}:${BRANCH}"
+              PRIMARY_TAG="${BRANCH}"
+              ALIAS_TAG=""
+              TAGS="${IMAGE_REF}:${PRIMARY_TAG}"
               ;;
           esac
+          echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "primary_tag=${PRIMARY_TAG}" >> "$GITHUB_OUTPUT"
+          echo "alias_tag=${ALIAS_TAG}" >> "$GITHUB_OUTPUT"
           {
             echo "tags<<EOF"
             echo "$TAGS"
@@ -419,7 +430,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Login to Docker Hub
+        if: needs.setup.outputs.mode == 'nightly' || needs.setup.outputs.mode == 'release'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: Build and push Docker image to GHCR
+        if: needs.setup.outputs.mode == 'pr' || needs.setup.outputs.mode == 'snapshot'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -433,6 +452,43 @@ jobs:
             org.opencontainers.image.title=${{ steps.docker_config.outputs.image }}
             org.opencontainers.image.description=bclone image
           tags: ${{ steps.docker_config.outputs.tags }}
+
+      - name: Build and push Docker image to registries
+        if: needs.setup.outputs.mode == 'nightly'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.get_tag.outputs.tag }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.get_tag.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ steps.docker_config.outputs.image }}
+            org.opencontainers.image.description=bclone image
+          tags: |
+            ${{ steps.docker_config.outputs.tags }}
+            ${{ secrets.DOCKER_HUB_USERNAME }}/${{ steps.docker_config.outputs.repo }}:${{ steps.docker_config.outputs.primary_tag }}
+
+      - name: Build and push release Docker image to registries
+        if: needs.setup.outputs.mode == 'release'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.get_tag.outputs.tag }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.get_tag.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ steps.docker_config.outputs.image }}
+            org.opencontainers.image.description=bclone image
+          tags: |
+            ${{ steps.docker_config.outputs.tags }}
+            ${{ secrets.DOCKER_HUB_USERNAME }}/${{ steps.docker_config.outputs.repo }}:${{ steps.docker_config.outputs.primary_tag }}
+            ${{ secrets.DOCKER_HUB_USERNAME }}/${{ steps.docker_config.outputs.repo }}:${{ steps.docker_config.outputs.alias_tag }}
 
   docker-plugin:
     name: Docker plugin
@@ -458,15 +514,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PAT }}
+
       - name: Publish Docker volume plugin
         env:
+          DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
           MODE: ${{ needs.setup.outputs.mode }}
         run: |
           OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
           REPO="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
-          PLUGIN_USER="ghcr.io/${OWNER}"
           PLUGIN_IMAGE_NAME="docker-volume-rclone"
-          PLUGIN_BASE_IMAGE_NAME="${REPO}"
           ARCHES="amd64 arm64"
 
           case "${MODE}" in
@@ -483,23 +544,30 @@ jobs:
               ;;
           esac
 
-          for PLUGIN_ARCH in ${ARCHES}; do
-            make docker-plugin \
-              PLUGIN_USER="${PLUGIN_USER}" \
-              PLUGIN_IMAGE_NAME="${PLUGIN_IMAGE_NAME}" \
-              PLUGIN_BASE_IMAGE_NAME="${PLUGIN_BASE_IMAGE_NAME}" \
-              PLUGIN_BASE_TAG="${BASE_TAG}" \
-              PLUGIN_ARCH="${PLUGIN_ARCH}" \
-              PLUGIN_TAG="${PLUGIN_ARCH}-${TAG_SUFFIX}"
-          done
+          publish_plugin_set() {
+            local plugin_user="$1"
 
-          while IFS= read -r PLUGIN_TAG; do
-            [ -n "${PLUGIN_TAG}" ] || continue
-            make docker-plugin \
-              PLUGIN_USER="${PLUGIN_USER}" \
-              PLUGIN_IMAGE_NAME="${PLUGIN_IMAGE_NAME}" \
-              PLUGIN_BASE_IMAGE_NAME="${PLUGIN_BASE_IMAGE_NAME}" \
-              PLUGIN_BASE_TAG="${BASE_TAG}" \
-              PLUGIN_ARCH="amd64" \
-              PLUGIN_TAG="${PLUGIN_TAG}"
-          done <<< "${AMD64_ALIAS_TAGS}"
+            for PLUGIN_ARCH in ${ARCHES}; do
+              make docker-plugin \
+                PLUGIN_USER="${plugin_user}" \
+                PLUGIN_IMAGE_NAME="${PLUGIN_IMAGE_NAME}" \
+                PLUGIN_BASE_IMAGE_NAME="${REPO}" \
+                PLUGIN_BASE_TAG="${BASE_TAG}" \
+                PLUGIN_ARCH="${PLUGIN_ARCH}" \
+                PLUGIN_TAG="${PLUGIN_ARCH}-${TAG_SUFFIX}"
+            done
+
+            while IFS= read -r PLUGIN_TAG; do
+              [ -n "${PLUGIN_TAG}" ] || continue
+              make docker-plugin \
+                PLUGIN_USER="${plugin_user}" \
+                PLUGIN_IMAGE_NAME="${PLUGIN_IMAGE_NAME}" \
+                PLUGIN_BASE_IMAGE_NAME="${REPO}" \
+                PLUGIN_BASE_TAG="${BASE_TAG}" \
+                PLUGIN_ARCH="amd64" \
+                PLUGIN_TAG="${PLUGIN_TAG}"
+            done <<< "${AMD64_ALIAS_TAGS}"
+          }
+
+          publish_plugin_set "ghcr.io/${OWNER}"
+          publish_plugin_set "${DOCKER_HUB_USERNAME}"
