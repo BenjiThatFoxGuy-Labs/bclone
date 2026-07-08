@@ -268,7 +268,7 @@ jobs:
         id: docker_config
         run: |
           OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          REPO="${GITHUB_REPOSITORY#*/}"
+          REPO="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
           IMAGE="${OWNER}/${REPO}"
           IMAGE_REF="ghcr.io/${IMAGE}"
           case "${{ needs.setup.outputs.mode }}" in
@@ -335,3 +335,73 @@ jobs:
             org.opencontainers.image.title=${{ steps.docker_config.outputs.image }}
             org.opencontainers.image.description=bclone image
           tags: ${{ steps.docker_config.outputs.tags }}
+
+  docker-plugin:
+    name: Docker plugin
+    if: needs.setup.outputs.mode == 'nightly' || needs.setup.outputs.mode == 'release'
+    runs-on: ubuntu-latest
+    needs: [setup, docker]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Docker volume plugin
+        env:
+          MODE: ${{ needs.setup.outputs.mode }}
+        run: |
+          OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          REPO="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          PLUGIN_USER="ghcr.io/${OWNER}"
+          PLUGIN_IMAGE_NAME="docker-volume-rclone"
+          PLUGIN_BASE_IMAGE_NAME="${REPO}"
+          ARCHES="amd64 arm64"
+
+          case "${MODE}" in
+            nightly)
+              BASE_TAG="nightly"
+              TAG_SUFFIX="nightly"
+              AMD64_ALIAS_TAGS="nightly"
+              ;;
+            release)
+              REF_TAG="${GITHUB_REF#refs/tags/}"
+              BASE_TAG="${REF_TAG}"
+              TAG_SUFFIX="${REF_TAG#v}"
+              AMD64_ALIAS_TAGS="${REF_TAG#v}"$'\n'"latest"
+              ;;
+          esac
+
+          for PLUGIN_ARCH in ${ARCHES}; do
+            make docker-plugin \
+              PLUGIN_USER="${PLUGIN_USER}" \
+              PLUGIN_IMAGE_NAME="${PLUGIN_IMAGE_NAME}" \
+              PLUGIN_BASE_IMAGE_NAME="${PLUGIN_BASE_IMAGE_NAME}" \
+              PLUGIN_BASE_TAG="${BASE_TAG}" \
+              PLUGIN_ARCH="${PLUGIN_ARCH}" \
+              PLUGIN_TAG="${PLUGIN_ARCH}-${TAG_SUFFIX}"
+          done
+
+          while IFS= read -r PLUGIN_TAG; do
+            [ -n "${PLUGIN_TAG}" ] || continue
+            make docker-plugin \
+              PLUGIN_USER="${PLUGIN_USER}" \
+              PLUGIN_IMAGE_NAME="${PLUGIN_IMAGE_NAME}" \
+              PLUGIN_BASE_IMAGE_NAME="${PLUGIN_BASE_IMAGE_NAME}" \
+              PLUGIN_BASE_TAG="${BASE_TAG}" \
+              PLUGIN_ARCH="amd64" \
+              PLUGIN_TAG="${PLUGIN_TAG}"
+          done <<< "${AMD64_ALIAS_TAGS}"
