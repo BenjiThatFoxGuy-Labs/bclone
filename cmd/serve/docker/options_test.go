@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	_ "github.com/rclone/rclone/backend/local"
+	_ "github.com/rclone/rclone/backend/tmpfs"
 )
 
 func TestApplyOptions(t *testing.T) {

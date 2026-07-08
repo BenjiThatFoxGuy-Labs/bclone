@@ -1,14 +1,13 @@
 ---
 title: "Tmpfs"
 description: "Rclone docs for Tmpfs backend"
-versionIntroduced: "v1.72"
+versionIntroduced: "v1.74"
 ---
 
 # {{< icon "fas fa-memory" >}} Tmpfs
 
-The tmpfs backend is an ephemeral adapter for Docker volume use. It
-wraps another rclone remote and treats the wrapped root as disposable
-temporary storage.
+The tmpfs backend is an ephemeral adapter. It wraps another rclone
+remote and treats the wrapped root as disposable temporary storage.
 
 Tmpfs can wrap an in-memory remote, a local directory on a tmpfs
 mount, or another backend rooted at a dedicated temporary path. It can
@@ -20,6 +19,20 @@ point `tmpfs-remote` at shared or permanent data.
 
 Tmpfs is supported on Unix-like systems in v1. Windows support is
 deferred.
+
+## Examples
+
+List a temporary in-memory root:
+
+```sh
+rclone lsf :tmpfs,remote=':memory:cli-tmp':
+```
+
+Use a size limit with another backend root:
+
+```sh
+rclone copy ./work :tmpfs,remote='remote:tmp/work',max_size=4G:
+```
 
 ## Docker volume examples
 

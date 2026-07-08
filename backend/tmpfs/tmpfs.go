@@ -110,11 +110,6 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 		fs.Errorf(nil, "%v", err)
 		return nil, err
 	}
-	if !isDockerContext(ctx) {
-		err := errors.New("tmpfs backend is only supported by rclone serve docker in v1")
-		fs.Errorf(nil, "%v", err)
-		return nil, err
-	}
 
 	opt := new(Options)
 	if err := configstruct.Set(m, opt); err != nil {

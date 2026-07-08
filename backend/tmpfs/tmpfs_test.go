@@ -18,21 +18,23 @@ import (
 	_ "github.com/rclone/rclone/backend/memory"
 )
 
-func TestDirectUseRequiresDockerContext(t *testing.T) {
-	_, err := fs.NewFs(context.Background(), ":tmpfs,remote=':memory:tmpfs-direct':")
-	require.Error(t, err)
+func TestDirectUseAllowed(t *testing.T) {
 	if runtime.GOOS == "windows" {
+		_, err := fs.NewFs(context.Background(), ":tmpfs,remote=':memory:tmpfs-direct':")
+		require.Error(t, err)
 		assert.ErrorContains(t, err, "not supported on Windows")
-	} else {
-		assert.ErrorContains(t, err, "rclone serve docker")
+		return
 	}
+	fsys, err := fs.NewFs(context.Background(), ":tmpfs,remote=':memory:tmpfs-direct',cleanup_on_shutdown=false:")
+	require.NoError(t, err)
+	require.NoError(t, fsys.(*Fs).Shutdown(context.Background()))
 }
 
 func TestMemoryRootMustNotBeEmpty(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("tmpfs is not supported on Windows")
 	}
-	_, err := fs.NewFs(WithDockerContext(context.Background()), ":tmpfs,remote=':memory:':")
+	_, err := fs.NewFs(context.Background(), ":tmpfs,remote=':memory:':")
 	require.ErrorContains(t, err, "non-empty dedicated root")
 }
 
@@ -74,7 +76,7 @@ func TestValidateLocalRootRejectsSymlinkToBroadRoot(t *testing.T) {
 }
 
 func TestMaxSizeRejectsOversizedWrites(t *testing.T) {
-	f := newMemoryTmpfs(t, "max_size=5,cleanup_on_shutdown=false")
+	f := newMemoryTmpfs(t, "max_size=5B,cleanup_on_shutdown=false")
 	ctx := context.Background()
 
 	require.NoError(t, putString(ctx, f, "a.txt", "12345", time.Now()))
@@ -115,7 +117,7 @@ func TestShutdownCleanupPreservesParentAndSibling(t *testing.T) {
 	require.NoError(t, osMkdirAll(sibling, 0o700))
 	require.NoError(t, osWriteFile(filepath.Join(sibling, "keep.txt"), []byte("keep"), 0o600))
 
-	fsys, err := fs.NewFs(WithDockerContext(ctx), ":tmpfs,remote='"+filepath.ToSlash(root)+"',purge_on_start=false:")
+	fsys, err := fs.NewFs(ctx, ":tmpfs,remote='"+filepath.ToSlash(root)+"',purge_on_start=false:")
 	require.NoError(t, err)
 	f := fsys.(*Fs)
 	require.NoError(t, putString(ctx, f, "data.txt", "data", time.Now()))
@@ -135,7 +137,7 @@ func newMemoryTmpfs(t *testing.T, opts string) *Fs {
 		remote += "," + opts
 	}
 	remote += ":"
-	fsys, err := fs.NewFs(WithDockerContext(context.Background()), remote)
+	fsys, err := fs.NewFs(context.Background(), remote)
 	require.NoError(t, err)
 	f := fsys.(*Fs)
 	t.Cleanup(func() {
