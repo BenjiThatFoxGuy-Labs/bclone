@@ -1,4 +1,4 @@
-﻿package docker
+package docker
 
 import (
 	"testing"
@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	_ "github.com/rclone/rclone/backend/local"
+	_ "github.com/rclone/rclone/backend/tmpfs"
 )
 
 func TestApplyOptions(t *testing.T) {
@@ -56,6 +57,25 @@ func TestApplyOptions(t *testing.T) {
 	assert.Equal(t, true, vol.mnt.VFSOpt.NoModTime)
 	assert.Equal(t, true, vol.mnt.VFSOpt.NoChecksum)
 	assert.Equal(t, true, vol.mnt.VFSOpt.NoSeek)
+
+	volTmpfs := &Volume{
+		Name:       "tmpfsName",
+		MountPoint: "tmpfsPath",
+		drv: &Driver{
+			root: "testRoot",
+		},
+		mnt: &mountlib.MountPoint{
+			MountPoint: "tmpfsPath",
+		},
+		mountReqs: make(map[string]any),
+	}
+	err = volTmpfs.applyOptions(VolOpts{
+		"type":           "tmpfs",
+		"tmpfs-remote":   ":memory:bucket",
+		"tmpfs-max-size": "1G",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ":tmpfs,max_size='1G',remote=':memory:bucket':", volTmpfs.fsString)
 
 	// Check errors
 	err = vol.applyOptions(VolOpts{

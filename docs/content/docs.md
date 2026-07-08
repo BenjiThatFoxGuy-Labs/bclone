@@ -64,6 +64,7 @@ See the following for detailed instructions for
 - [Mail.ru Cloud](/mailru/)
 - [Mega](/mega/)
 - [Memory](/memory/)
+- [Tmpfs](/tmpfs/) - ephemeral adapter for dedicated temporary storage
 - [Microsoft Azure Blob Storage](/azureblob/)
 - [Microsoft Azure Files Storage](/azurefiles/)
 - [Microsoft OneDrive](/onedrive/)

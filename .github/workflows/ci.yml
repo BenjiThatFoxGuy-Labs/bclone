@@ -10,12 +10,9 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
-env:
-  IMAGE: benjithatfoxguy/bclone
-
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Decides what kind of run this is and what to build. Like bdrive: tags get
@@ -270,7 +267,10 @@ jobs:
       - name: Determine Docker tags
         id: docker_config
         run: |
-          IMAGE_REF="ghcr.io/${{ env.IMAGE }}"
+          OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          IMAGE="${OWNER}/${REPO}"
+          IMAGE_REF="ghcr.io/${IMAGE}"
           case "${{ needs.setup.outputs.mode }}" in
             pr)
               TAGS="${IMAGE_REF}:pr-${{ github.event.pull_request.number }}"
@@ -288,6 +288,7 @@ jobs:
               TAGS="${IMAGE_REF}:${BRANCH}"
               ;;
           esac
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           {
             echo "tags<<EOF"
             echo "$TAGS"
@@ -331,6 +332,6 @@ jobs:
           labels: |
             org.opencontainers.image.version=${{ steps.get_tag.outputs.tag }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.title=${{ env.IMAGE }}
+            org.opencontainers.image.title=${{ steps.docker_config.outputs.image }}
             org.opencontainers.image.description=bclone image
           tags: ${{ steps.docker_config.outputs.tags }}
