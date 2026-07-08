@@ -575,7 +575,7 @@ func (f *Fs) maxAgeEnabled() bool {
 }
 
 func ignoreNotFound(err error) error {
-	if errors.Is(err, fs.ErrorDirNotFound) || errors.Is(err, fs.ErrorObjectNotFound) {
+	if errors.Is(err, fs.ErrorDirNotFound) || errors.Is(err, fs.ErrorObjectNotFound) || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	return err

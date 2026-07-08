@@ -75,6 +75,23 @@ func TestValidateLocalRootRejectsSymlinkToBroadRoot(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestMissingLocalRootIsTreatedAsEmpty(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmpfs is not supported on Windows")
+	}
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "missing", "owned")
+
+	fsys, err := fs.NewFs(ctx, ":tmpfs,remote='"+filepath.ToSlash(root)+"':")
+	require.NoError(t, err)
+	f := fsys.(*Fs)
+	require.NoError(t, f.Shutdown(ctx))
+
+	entries, err := osReadDir(root)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
 func TestMaxSizeRejectsOversizedWrites(t *testing.T) {
 	f := newMemoryTmpfs(t, "max_size=5B,cleanup_on_shutdown=false")
 	ctx := context.Background()
