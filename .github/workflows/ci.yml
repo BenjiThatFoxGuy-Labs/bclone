@@ -439,42 +439,70 @@ jobs:
       - name: Determine Docker tags
         id: docker_config
         run: |
-          OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          GHCR_OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          GHCR_ALT_OWNER="benjithatfoxguy"
           REPO="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
-          IMAGE="${OWNER}/${REPO}"
-          IMAGE_REF="ghcr.io/${IMAGE}"
+          IMAGE="${GHCR_OWNER}/${REPO}"
+          ALT_IMAGE="${GHCR_ALT_OWNER}/${REPO}"
+
+          ghcr_tag() {
+            local owner="$1"
+            local tag="$2"
+
+            echo "ghcr.io/${owner}/${REPO}:${tag}"
+          }
+
           case "${{ needs.setup.outputs.mode }}" in
             pr)
               PRIMARY_TAG="pr-${{ github.event.pull_request.number }}"
               ALIAS_TAG=""
-              TAGS="${IMAGE_REF}:${PRIMARY_TAG}"
+              TAGS="$(ghcr_tag "${GHCR_OWNER}" "${PRIMARY_TAG}")"
+              ALT_TAGS="$(ghcr_tag "${GHCR_ALT_OWNER}" "${PRIMARY_TAG}")"
               ;;
             nightly)
               PRIMARY_TAG="nightly"
               ALIAS_TAG=""
-              TAGS="${IMAGE_REF}:${PRIMARY_TAG}"
+              TAGS="$(ghcr_tag "${GHCR_OWNER}" "${PRIMARY_TAG}")"
+              ALT_TAGS="$(ghcr_tag "${GHCR_ALT_OWNER}" "${PRIMARY_TAG}")"
               ;;
             release)
               REF_TAG="${GITHUB_REF#refs/tags/}"
               PRIMARY_TAG="${REF_TAG}"
               ALIAS_TAG="latest"
-              TAGS="${IMAGE_REF}:${PRIMARY_TAG}"$'\n'"${IMAGE_REF}:${ALIAS_TAG}"
+              TAGS="$(ghcr_tag "${GHCR_OWNER}" "${PRIMARY_TAG}")"$'\n'"$(ghcr_tag "${GHCR_OWNER}" "${ALIAS_TAG}")"
+              ALT_TAGS="$(ghcr_tag "${GHCR_ALT_OWNER}" "${PRIMARY_TAG}")"$'\n'"$(ghcr_tag "${GHCR_ALT_OWNER}" "${ALIAS_TAG}")"
               ;;
             snapshot)
               BRANCH="${GITHUB_REF#refs/heads/}"
               BRANCH="${BRANCH//\//-}"
               PRIMARY_TAG="${BRANCH}"
               ALIAS_TAG=""
-              TAGS="${IMAGE_REF}:${PRIMARY_TAG}"
+              TAGS="$(ghcr_tag "${GHCR_OWNER}" "${PRIMARY_TAG}")"
+              ALT_TAGS="$(ghcr_tag "${GHCR_ALT_OWNER}" "${PRIMARY_TAG}")"
               ;;
           esac
+
+          if [ "${GHCR_ALT_OWNER}" = "${GHCR_OWNER}" ]; then
+            ALT_TAGS=""
+            PUBLISH_ALT_GHCR="false"
+          else
+            PUBLISH_ALT_GHCR="true"
+          fi
+
           echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+          echo "ghcr_owner=${GHCR_OWNER}" >> "$GITHUB_OUTPUT"
+          echo "ghcr_alt_owner=${GHCR_ALT_OWNER}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "alt_image=${ALT_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "primary_tag=${PRIMARY_TAG}" >> "$GITHUB_OUTPUT"
           echo "alias_tag=${ALIAS_TAG}" >> "$GITHUB_OUTPUT"
+          echo "publish_alt_ghcr=${PUBLISH_ALT_GHCR}" >> "$GITHUB_OUTPUT"
           {
             echo "tags<<EOF"
             echo "$TAGS"
+            echo "EOF"
+            echo "alt_tags<<EOF"
+            echo "$ALT_TAGS"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -503,6 +531,20 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check extra GHCR token
+        if: steps.docker_config.outputs.publish_alt_ghcr == 'true'
+        id: ghcr_alt_auth
+        shell: bash
+        env:
+          GHCR_BENJITHATFOXGUY_TOKEN: ${{ secrets.GHCR_BENJITHATFOXGUY_TOKEN }}
+        run: |
+          if [ -n "${GHCR_BENJITHATFOXGUY_TOKEN}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "GHCR_BENJITHATFOXGUY_TOKEN is not configured; skipping extra GHCR namespace publish."
+          fi
 
       - name: Login to Docker Hub
         if: needs.setup.outputs.mode == 'nightly' || needs.setup.outputs.mode == 'release'
@@ -564,6 +606,33 @@ jobs:
             ${{ secrets.DOCKER_HUB_USERNAME }}/${{ steps.docker_config.outputs.repo }}:${{ steps.docker_config.outputs.primary_tag }}
             ${{ secrets.DOCKER_HUB_USERNAME }}/${{ steps.docker_config.outputs.repo }}:${{ steps.docker_config.outputs.alias_tag }}
 
+      - name: Login to extra GitHub Container Registry namespace
+        if: steps.docker_config.outputs.publish_alt_ghcr == 'true' && steps.ghcr_alt_auth.outputs.available == 'true'
+        id: extra_ghcr_login
+        continue-on-error: true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: benjithatfoxguy
+          password: ${{ secrets.GHCR_BENJITHATFOXGUY_TOKEN }}
+
+      - name: Build and push Docker image to extra GHCR namespace
+        if: steps.docker_config.outputs.publish_alt_ghcr == 'true' && steps.ghcr_alt_auth.outputs.available == 'true' && steps.extra_ghcr_login.outcome == 'success'
+        continue-on-error: true
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.get_tag.outputs.tag }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.get_tag.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ steps.docker_config.outputs.alt_image }}
+            org.opencontainers.image.description=bclone image
+          tags: ${{ steps.docker_config.outputs.alt_tags }}
+
   docker-plugin:
     name: Docker plugin
     if: needs.setup.outputs.mode == 'nightly' || needs.setup.outputs.mode == 'release'
@@ -603,9 +672,11 @@ jobs:
       - name: Publish Docker volume plugin
         env:
           DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+          GHCR_BENJITHATFOXGUY_TOKEN: ${{ secrets.GHCR_BENJITHATFOXGUY_TOKEN }}
           MODE: ${{ needs.setup.outputs.mode }}
         run: |
-          OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          GHCR_OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          GHCR_ALT_OWNER="benjithatfoxguy"
           REPO="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
           PLUGIN_IMAGE_NAME="docker-volume-rclone"
           ARCHES="amd64 arm64"
@@ -649,5 +720,16 @@ jobs:
             done <<< "${AMD64_ALIAS_TAGS}"
           }
 
-          publish_plugin_set "ghcr.io/${OWNER}"
+          publish_plugin_set "ghcr.io/${GHCR_OWNER}"
+          if [ "${GHCR_ALT_OWNER}" != "${GHCR_OWNER}" ]; then
+            if [ -n "${GHCR_BENJITHATFOXGUY_TOKEN}" ]; then
+              if echo "${GHCR_BENJITHATFOXGUY_TOKEN}" | docker login ghcr.io -u "${GHCR_ALT_OWNER}" --password-stdin; then
+                publish_plugin_set "ghcr.io/${GHCR_ALT_OWNER}" || echo "Could not publish plugin to ghcr.io/${GHCR_ALT_OWNER}; continuing."
+              else
+                echo "Could not log in to ghcr.io as ${GHCR_ALT_OWNER}; skipping extra GHCR plugin publish."
+              fi
+            else
+              echo "GHCR_BENJITHATFOXGUY_TOKEN is not configured; skipping extra GHCR plugin publish."
+            fi
+          fi
           publish_plugin_set "${DOCKER_HUB_USERNAME}"

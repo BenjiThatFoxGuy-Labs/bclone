@@ -6,10 +6,13 @@ on:
     - cron: '0 */12 * * *'
   workflow_dispatch:
 
+env:
+  GHCR_ALT_OWNER: benjithatfoxguy
+  GHCR_CLEANUP_OWNER: benjithatfoxguy-labs
+
 concurrency:
   group: cleanup-${{ github.ref_name }}
   cancel-in-progress: false
-  queue: max
 
 jobs:
   remove-old-artifacts:
@@ -28,3 +31,89 @@ jobs:
         # Optional inputs
         # skip-tags: true
         # skip-recent: 5
+
+    - name: Install cleanup tools
+      if: runner.os == 'Linux'
+      continue-on-error: true
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        missing=()
+        for tool in curl jq; do
+          if ! command -v "$tool" >/dev/null 2>&1; then
+            missing+=("$tool")
+          fi
+        done
+
+        if (( ${#missing[@]} )); then
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${missing[@]}"
+        fi
+
+    - name: Cleanup old GHCR namespace
+      continue-on-error: true
+      shell: bash
+      env:
+        GHCR_BENJITHATFOXGUY_LABS_CLEANUP_TOKEN: ${{ secrets.GHCR_BENJITHATFOXGUY_LABS_CLEANUP_TOKEN }}
+      run: |
+        set -euo pipefail
+
+        current_owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+        alt_owner="$(printf '%s' "${GHCR_ALT_OWNER}" | tr '[:upper:]' '[:lower:]')"
+        cleanup_owner="$(printf '%s' "${GHCR_CLEANUP_OWNER}" | tr '[:upper:]' '[:lower:]')"
+
+        if [ "${current_owner}" != "${alt_owner}" ]; then
+          echo "Current owner is ${current_owner}; skipping cleanup for ${cleanup_owner}."
+          exit 0
+        fi
+
+        if [ -z "${GHCR_BENJITHATFOXGUY_LABS_CLEANUP_TOKEN}" ]; then
+          echo "GHCR_BENJITHATFOXGUY_LABS_CLEANUP_TOKEN is not configured; skipping GHCR cleanup."
+          exit 0
+        fi
+
+        repo="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+        packages=("${repo}" "docker-volume-rclone")
+
+        api() {
+          local method="$1"
+          local url="$2"
+
+          curl -fsS \
+            -X "${method}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GHCR_BENJITHATFOXGUY_LABS_CLEANUP_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${url}"
+        }
+
+        for package in "${packages[@]}"; do
+          package_path="$(jq -rn --arg value "${package}" '$value|@uri')"
+          base_url="https://api.github.com/orgs/${cleanup_owner}/packages/container/${package_path}/versions"
+          deleted=0
+
+          while true; do
+            versions="$(api GET "${base_url}?per_page=100" || true)"
+            if [ -z "${versions}" ]; then
+              echo "No ${cleanup_owner}/${package} package found, or token cannot access it."
+              break
+            fi
+
+            count="$(jq 'length' <<< "${versions}")"
+            if [ "${count}" -eq 0 ]; then
+              break
+            fi
+
+            while IFS= read -r version_id; do
+              [ -n "${version_id}" ] || continue
+              if api DELETE "${base_url}/${version_id}" >/dev/null; then
+                deleted=$((deleted + 1))
+              else
+                echo "Could not delete version ${version_id} from ghcr.io/${cleanup_owner}/${package}; continuing."
+              fi
+            done < <(jq -r '.[].id' <<< "${versions}")
+          done
+
+          echo "Deleted ${deleted} version(s) from ghcr.io/${cleanup_owner}/${package}."
+        done
