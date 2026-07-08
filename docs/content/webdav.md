@@ -53,7 +53,7 @@ Choose a number from below, or type in your own value
    \ (owncloud)
  4 / Sharepoint Online, authenticated by Microsoft account
    \ (sharepoint)
- 5 / Sharepoint with NTLM authentication, usually self-hosted or on-premises
+ 5 / Sharepoint with NTLM authentication, usually ubuntu-latest or on-premises
    \ (sharepoint-ntlm)
  6 / rclone WebDAV server to serve a remote over HTTP via the WebDAV protocol
    \ (rclone)
@@ -160,7 +160,7 @@ Properties:
     - "sharepoint"
         - Sharepoint Online, authenticated by Microsoft account
     - "sharepoint-ntlm"
-        - Sharepoint with NTLM authentication, usually self-hosted or on-premises
+        - Sharepoint with NTLM authentication, usually ubuntu-latest or on-premises
     - "rclone"
         - rclone WebDAV server to serve a remote over HTTP via the WebDAV protocol
     - "other"

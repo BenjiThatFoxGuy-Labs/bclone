@@ -93,7 +93,7 @@ func init() {
 				Help:  "Sharepoint Online, authenticated by Microsoft account",
 			}, {
 				Value: "sharepoint-ntlm",
-				Help:  "Sharepoint with NTLM authentication, usually self-hosted or on-premises",
+				Help:  "Sharepoint with NTLM authentication, usually ubuntu-latest or on-premises",
 			}, {
 				Value: "rclone",
 				Help:  "rclone WebDAV server to serve a remote over HTTP via the WebDAV protocol",

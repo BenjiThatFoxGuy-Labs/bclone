@@ -14,7 +14,7 @@ env:
 jobs:
   quicktest:
     name: quicktest
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Bootstrap Linux runner
         if: runner.os == 'Linux'

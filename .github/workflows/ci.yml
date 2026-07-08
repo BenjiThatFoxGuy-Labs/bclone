@@ -34,7 +34,7 @@ jobs:
   #   CI_LINUX_ONLY=true             -> selected mode, but without macOS/Windows
   setup:
     name: Determine run mode
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     outputs:
       mode: ${{ steps.config.outputs.mode }}
       linux_matrix: ${{ steps.config.outputs.linux_matrix }}
@@ -99,8 +99,8 @@ jobs:
       - name: Determine mode and matrix
         id: config
         run: |
-          LINUX_ONLY='[{"job_name":"linux","os":"self-hosted","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64)\""}]'
-          LINUX_FULL='[{"job_name":"linux","os":"self-hosted","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64|linux/arm-v7)\""}]'
+          LINUX_ONLY='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64)\""}]'
+          LINUX_FULL='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64|linux/arm-v7)\""}]'
           EXTRA_FULL='[{"job_name":"windows","os":"windows-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(windows/amd64|windows/arm64)\"","build_args":"-buildmode exe"},{"job_name":"mac_amd64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/amd64\" -cgo"},{"job_name":"mac_arm64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/arm64\" -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib"}]'
 
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
@@ -214,7 +214,7 @@ jobs:
       - name: Build bclone
         shell: bash
         run: |
-          if [[ "${{ matrix.os }}" == "self-hosted" ]]; then make release_dep_linux ; fi
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then make release_dep_linux ; fi
           make cross
 
       - name: Upload Binary
@@ -320,7 +320,7 @@ jobs:
   release:
     name: Create Release
     if: always() && (needs.setup.outputs.mode == 'nightly' || needs.setup.outputs.mode == 'release') && needs.build-linux.result == 'success' && (needs.build-extra.result == 'success' || needs.build-extra.result == 'skipped')
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: [setup, build-linux, build-extra]
     permissions:
       contents: write
@@ -386,7 +386,7 @@ jobs:
   comment-artifacts:
     name: Comment artifacts on PR
     if: needs.setup.outputs.mode == 'pr'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: [setup, build-linux]
     permissions:
       pull-requests: write
@@ -410,7 +410,7 @@ jobs:
   # 'Docker image' that is green on every PR, so it works as a merge condition.
   docker:
     name: Docker image
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: [setup, build-linux]
     permissions:
       packages: write
@@ -636,7 +636,7 @@ jobs:
   docker-plugin:
     name: Docker plugin
     if: needs.setup.outputs.mode == 'nightly' || needs.setup.outputs.mode == 'release'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: [setup, docker]
     permissions:
       contents: read

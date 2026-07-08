@@ -15,7 +15,7 @@ jobs:
 
         include:
           - job_name: linux
-            os: self-hosted
+            os: ubuntu-latest
             go: '>=1.24.0-rc.1'
             gotags: cmount
             build_flags: '-include "^linux/"'
@@ -26,7 +26,7 @@ jobs:
             deploy: true
 
           - job_name: linux_386
-            os: self-hosted
+            os: ubuntu-latest
             go: '>=1.24.0-rc.1'
             goarch: 386
             gotags: cmount
@@ -59,14 +59,14 @@ jobs:
             deploy: true
 
           - job_name: other_os
-            os: self-hosted
+            os: ubuntu-latest
             go: '>=1.24.0-rc.1'
             build_flags: '-exclude "^(windows/|darwin/|linux/)"'
             compile_all: true
             deploy: true
 
           - job_name: go1.23
-            os: self-hosted
+            os: ubuntu-latest
             go: '1.23'
             quicktest: true
             racequicktest: true
@@ -96,7 +96,7 @@ jobs:
           if [[ "${{ matrix.cgo }}" != "" ]]; then echo 'CGO_ENABLED=${{ matrix.cgo }}' >> $GITHUB_ENV ; fi
 
       - name: Install dependencies (Linux)
-        if: matrix.os == 'self-hosted'
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           sudo modprobe fuse
@@ -176,7 +176,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4

@@ -103,7 +103,7 @@ Side by side comparison with more details:
   - *Storj backend*: **high**. Data is downloaded directly from
     the distributed cloud of storage providers.
   - *S3 backend*: **low**. Requires a running S3 gateway (either
-    self-hosted or Storj-hosted).
+    ubuntu-latest or Storj-hosted).
 - Limitations:
   - *Storj backend*: `rclone checksum` is not possible without
     download, as checksum metadata is not calculated during upload
