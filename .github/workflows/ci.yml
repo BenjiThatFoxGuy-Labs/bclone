@@ -47,21 +47,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Find apt-get
+          # Find apt-get. Note: the variable name must be a valid shell
+          # identifier - "apt-get" is not, so "$apt-get" would expand as
+          # "$apt" + "-get" and trip "set -u" with an unbound variable.
+          APT_GET=""
           if command -v apt-get >/dev/null 2>&1; then
+            APT_GET="$(command -v apt-get)"
+            HAVE_APT=true
+          elif [ -x /usr/bin/apt-get ]; then
+            APT_GET="/usr/bin/apt-get"
+            HAVE_APT=true
+          elif [ -x /bin/apt-get ]; then
+            APT_GET="/bin/apt-get"
             HAVE_APT=true
           else
-            # Try to locate apt-get in common paths
-            if [ -x /usr/bin/apt-get ]; then
-              apt-get="/usr/bin/apt-get"
-              HAVE_APT=true
-            elif [ -x /bin/apt-get ]; then
-              apt-get="/bin/apt-get"
-              HAVE_APT=true
-            else
-              echo "::warning::apt-get not found; assuming required packages are already installed."
-              HAVE_APT=false
-            fi
+            echo "::warning::apt-get not found; assuming required packages are already installed."
+            HAVE_APT=false
           fi
 
           if [ "$HAVE_APT" = true ]; then
@@ -75,9 +76,9 @@ jobs:
 
             if (( ${#missing[@]} )); then
               echo "Updating package list..."
-              sudo "$apt-get" update
+              sudo "$APT_GET" update
               echo "Installing missing packages: ${missing[*]}"
-              sudo "$apt-get" install -y --no-install-recommends "${missing[@]}"
+              sudo "$APT_GET" install -y --no-install-recommends "${missing[@]}"
             else
               echo "Linux runner packages already installed."
             fi
