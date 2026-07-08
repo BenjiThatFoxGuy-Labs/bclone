@@ -73,7 +73,7 @@ jobs:
               fi
             done
 
-            if (( ${#${missing[@]}} )); then
+            if (( ${#missing[@]} )); then
               echo "Updating package list..."
               sudo "$apt-get" update
               echo "Installing missing packages: ${missing[*]}"
