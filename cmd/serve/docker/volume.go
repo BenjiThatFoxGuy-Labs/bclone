@@ -1,4 +1,4 @@
-﻿package docker
+package docker
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/rclone/rclone/backend/tmpfs"
 	"github.com/rclone/rclone/cmd/mountlib"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
@@ -202,7 +203,7 @@ func (vol *Volume) setup(ctx context.Context) error {
 	}
 
 	// Use existing remote
-	f, err := fs.NewFs(ctx, vol.fsString)
+	f, err := fs.NewFs(tmpfs.WithDockerContext(ctx), vol.fsString)
 	if err == nil {
 		vol.mnt.Fs = f
 	}
