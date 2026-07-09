@@ -19,6 +19,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testMD5 is a syntactically valid (32 hex char) stand-in for a real
+// e621 file MD5, matching md5Leaf.
+const testMD5 = "deadbeefdeadbeefdeadbeefdeadbeef"
+
 func TestIsOfficialInstance(t *testing.T) {
 	cases := []struct {
 		endpoint string
@@ -194,7 +198,7 @@ func TestListFavorites(t *testing.T) {
 	posts := []api.Post{{
 		ID:        1,
 		CreatedAt: "2020-01-02T15:04:05.000-05:00",
-		File:      api.File{Ext: "jpg", MD5: "deadbeef", Size: 42, URL: "https://static.example/deadbeef.jpg"},
+		File:      api.File{Ext: "jpg", MD5: testMD5, Size: 42, URL: "https://static.example/" + testMD5 + ".jpg"},
 	}}
 	srv := httptest.NewServer(postsHandler(t, "fav:me", posts))
 	defer srv.Close()
@@ -204,7 +208,7 @@ func TestListFavorites(t *testing.T) {
 		entries, err := f.List(context.Background(), dir)
 		require.NoError(t, err)
 		require.Len(t, entries, 1)
-		assert.Equal(t, dir+"/deadbeef.jpg", entries[0].Remote())
+		assert.Equal(t, dir+"/"+testMD5+".jpg", entries[0].Remote())
 	}
 }
 
@@ -212,7 +216,7 @@ func TestNewObjectDirectFetch(t *testing.T) {
 	posts := []api.Post{{
 		ID:        1,
 		CreatedAt: "2020-01-02T15:04:05.000-05:00",
-		File:      api.File{Ext: "jpg", MD5: "deadbeef", Size: 42, URL: "https://static.example/deadbeef.jpg"},
+		File:      api.File{Ext: "jpg", MD5: testMD5, Size: 42, URL: "https://static.example/" + testMD5 + ".jpg"},
 	}}
 	srv := httptest.NewServer(postsHandler(t, "", posts))
 	defer srv.Close()
@@ -220,7 +224,7 @@ func TestNewObjectDirectFetch(t *testing.T) {
 	f := newTestFs(t, srv.URL, nil)
 	require.True(t, f.directFetch, "not running under mount/serve in this test")
 
-	obj, err := f.NewObject(context.Background(), "deadbeef.jpg")
+	obj, err := f.NewObject(context.Background(), testMD5+".jpg")
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), obj.Size())
 }
@@ -233,7 +237,7 @@ func TestNewObjectDirectFetchExcludedUnderMountOrServe(t *testing.T) {
 	posts := []api.Post{{
 		ID:        1,
 		CreatedAt: "2020-01-02T15:04:05.000-05:00",
-		File:      api.File{Ext: "jpg", MD5: "deadbeef", Size: 42, URL: "https://static.example/deadbeef.jpg"},
+		File:      api.File{Ext: "jpg", MD5: testMD5, Size: 42, URL: "https://static.example/" + testMD5 + ".jpg"},
 	}}
 	srv := httptest.NewServer(postsHandler(t, "", posts))
 	defer srv.Close()
@@ -241,14 +245,14 @@ func TestNewObjectDirectFetchExcludedUnderMountOrServe(t *testing.T) {
 	f := newTestFs(t, srv.URL, nil)
 	assert.False(t, f.directFetch)
 
-	_, err := f.NewObject(context.Background(), "deadbeef.jpg")
+	_, err := f.NewObject(context.Background(), testMD5+".jpg")
 	assert.ErrorIs(t, err, fs.ErrorObjectNotFound)
 
 	// Still reachable once it's within a known virtual directory.
 	favSrv := httptest.NewServer(postsHandler(t, "fav:me", posts))
 	defer favSrv.Close()
 	f2 := newTestFs(t, favSrv.URL, nil)
-	obj, err := f2.NewObject(context.Background(), "favorites/deadbeef.jpg")
+	obj, err := f2.NewObject(context.Background(), "favorites/"+testMD5+".jpg")
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), obj.Size())
 }
