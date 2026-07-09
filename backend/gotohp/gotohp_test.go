@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/configmap"
 )
 
@@ -227,6 +228,63 @@ func TestListSynthesizesDirsAndObjects(t *testing.T) {
 	}
 	if !sawObj {
 		t.Error("expected loose.jpg object entry")
+	}
+}
+
+func TestDeferUploadsDefaultIsFalse(t *testing.T) {
+	// No settle_time given: real deployments get this from the registered
+	// Option's Default (0) via a layered configmap.Map; a bare
+	// configmap.Simple has no such layering, but happens to agree here
+	// since the Go zero value of fs.Duration is also 0 — see the note on
+	// newTestFs above for why that coincidence doesn't hold in general.
+	m := configmap.Simple{"auth": testAuthString()}
+	f, err := NewFs(context.Background(), "test", "", m)
+	if err != nil {
+		t.Fatalf("NewFs: %v", err)
+	}
+	gf := f.(*Fs)
+	defer func() { _ = gf.Shutdown(context.Background()) }()
+	if gf.deferUploads {
+		t.Error("deferUploads should default to false (settle_time=0, synchronous mode)")
+	}
+}
+
+func TestSyncModeIgnoresPhantomCache(t *testing.T) {
+	m := configmap.Simple{
+		"auth":        testAuthString(),
+		"settle_time": "0",
+	}
+	f, err := NewFs(context.Background(), "test", "", m)
+	if err != nil {
+		t.Fatalf("NewFs: %v", err)
+	}
+	gf := f.(*Fs)
+	defer func() { _ = gf.Shutdown(context.Background()) }()
+
+	if gf.deferUploads {
+		t.Fatal("deferUploads should be false when settle_time=0")
+	}
+
+	// Even if something ended up in the phantom map, sync mode must not
+	// surface it via List/NewObject/Open — those should behave as a plain
+	// write-only remote with nothing lingering.
+	gf.setPhantom("photo.jpg", &phantomEntry{size: 1, modTime: time.Now(), createdAt: time.Now()})
+
+	entries, err := gf.List(context.Background(), "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("List returned %d entries in sync mode, want 0", len(entries))
+	}
+
+	if _, err := gf.NewObject(context.Background(), "photo.jpg"); err != fs.ErrorObjectNotFound {
+		t.Errorf("NewObject error = %v, want fs.ErrorObjectNotFound", err)
+	}
+
+	obj := &Object{f: gf, remote: "photo.jpg", size: 1, modTime: time.Now()}
+	if _, err := obj.Open(context.Background()); err == nil {
+		t.Error("expected Open to fail in sync mode")
 	}
 }
 

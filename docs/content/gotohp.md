@@ -84,30 +84,45 @@ when `album` is unset.
 `Mkdir`/`Rmdir` are no-ops: albums are created lazily by the first upload
 that targets them, and Google's API has no album-deletion call.
 
-## Why files linger after upload (and how mount/serve rely on it)
+## Two modes: synchronous (default) vs. deferred (mount/serve)
 
-This remote can't list or read back the library, so immediately after a
-`Put`, a `stat` or re-read of that same path would normally get
-"not found" — which is exactly the kind of thing that makes a mount
-client, or a client copying over `rclone serve`, think the write failed
-and retry it. To avoid that, a just-uploaded file's metadata **and actual
-bytes** are kept in a local cache and served back for `phantom_ttl`
-(default 5 minutes) after upload, via `List`, `NewObject`, and `Open`.
-Set `phantom_ttl` to at least your mount's `--dir-cache-time` /
-`--vfs-cache-max-age` so this lines up with how long your mount would
-otherwise expect that entry to stay valid.
+By default (`settle_time = 0`), every `Put` uploads to Google
+**synchronously** — the call doesn't return until the file has actually
+landed in the library. This is what you want for one-shot commands like
+`copy`/`sync`/`move`: the process uploads each file in turn and exits as
+soon as it's done, with no leftover background work.
 
-Separately, some clients (many SFTP/WebDAV clients driven through
-`rclone serve`) write to a temporary filename and then rename to the
-final name. Uploading the temporary file to Google would be wasteful and
-would litter the library, so actual upload to Google is deferred by
-`settle_time` (default 4s) after each write, and cancelled/superseded if
-that path is overwritten, renamed away from, or removed before the timer
-fires — only the final write for a given path actually reaches Google.
-This requires VFS caching (`--vfs-cache-mode writes` or `full`) to be
-effective end-to-end when mounting or serving. A clean `Shutdown`
-(unmount, or serve exiting normally) flushes any uploads still waiting out
-their settle time rather than dropping them.
+Setting `settle_time` to a nonzero duration (e.g. `4s`) switches on a
+different mode meant for mounting or serving this remote (including via
+Docker), where two problems show up that don't matter for a one-shot
+`copy`:
+
+1. This remote can't list or read back the library, so immediately after
+   a `Put`, a `stat` or re-read of that same path would normally get
+   "not found" — which is exactly the kind of thing that makes a mount
+   client, or a client copying over `rclone serve`, think the write
+   failed and retry it. In this mode, a just-uploaded file's metadata
+   **and actual bytes** are kept in a local cache and served back for
+   `phantom_ttl` (default 5 minutes) after upload, via `List`,
+   `NewObject`, and `Open`. Set `phantom_ttl` to at least your mount's
+   `--dir-cache-time` / `--vfs-cache-max-age` so this lines up with how
+   long your mount would otherwise expect that entry to stay valid.
+2. Some clients (many SFTP/WebDAV clients driven through `rclone serve`)
+   write to a temporary filename and then rename to the final name.
+   Uploading the temporary file to Google would be wasteful and would
+   litter the library, so in this mode the actual upload to Google is
+   deferred by `settle_time` after each write, and cancelled/superseded
+   if that path is overwritten, renamed away from, or removed before the
+   timer fires — only the final write for a given path actually reaches
+   Google.
+
+This mode requires VFS caching (`--vfs-cache-mode writes` or `full`) to
+be effective end-to-end when mounting or serving. A clean `Shutdown`
+(unmount, or serve exiting normally) flushes any uploads still waiting
+out their settle time rather than dropping them — so if you `Ctrl-C` a
+plain `copy` right after it appears to finish, know that's `Shutdown`
+waiting out `settle_time`, not a hang; leaving `settle_time` at its
+default of `0` avoids that wait entirely for one-shot commands.
 
 Google Photos also rejects (silently drops) uploaded bytes that don't
 look like a real supported photo/video, so test uploads must use a real
@@ -197,11 +212,25 @@ Properties:
 - Type:        bool
 - Default:     true
 
+### --gotohp-settle-time
+
+Enable deferred, debounced uploads for mount/serve (0 disables this).
+
+See "Two modes: synchronous (default) vs. deferred (mount/serve)" above.
+Leave at the default of 0 for normal copy/sync use; set to e.g. `4s` when
+mounting or serving this remote.
+
+Properties:
+
+- Config:      settle_time
+- Env Var:     RCLONE_GOTOHP_SETTLE_TIME
+- Type:        Duration
+- Default:     0s
+
 ### --gotohp-phantom-ttl
 
 How long a just-uploaded file keeps appearing in listings/stats/reads.
-
-See "Why files linger after upload" above.
+Only relevant when settle_time is nonzero — see above.
 
 Properties:
 
@@ -209,19 +238,6 @@ Properties:
 - Env Var:     RCLONE_GOTOHP_PHANTOM_TTL
 - Type:        Duration
 - Default:     5m0s
-
-### --gotohp-settle-time
-
-How long to wait after a write before actually uploading to Google.
-
-See "Why files linger after upload" above.
-
-Properties:
-
-- Config:      settle_time
-- Env Var:     RCLONE_GOTOHP_SETTLE_TIME
-- Type:        Duration
-- Default:     4s
 
 ## Limitations
 
