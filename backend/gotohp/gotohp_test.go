@@ -17,10 +17,17 @@ func testAuthString() string {
 
 // newTestFs builds a real *Fs (NewFs does no network I/O) for exercising
 // pure logic — path routing and the phantom cache — without ever talking to
-// Google.
+// Google. Option defaults are normally injected by a layered configmap.Map
+// (PriorityDefault) that fs.NewFs builds around the config; a bare
+// configmap.Simple skips that, so defaults relied on by these tests are
+// set explicitly here instead.
 func newTestFs(t *testing.T, root string) *Fs {
 	t.Helper()
-	m := configmap.Simple{"auth": testAuthString()}
+	m := configmap.Simple{
+		"auth":        testAuthString(),
+		"phantom_ttl": "5m",
+		"settle_time": "4s",
+	}
 	f, err := NewFs(context.Background(), "test", root, m)
 	if err != nil {
 		t.Fatalf("NewFs: %v", err)
