@@ -84,30 +84,52 @@ when `album` is unset.
 `Mkdir`/`Rmdir` are no-ops: albums are created lazily by the first upload
 that targets them, and Google's API has no album-deletion call.
 
-## Why files linger after upload (and how mount/serve rely on it)
+## Two modes: synchronous (plain commands) vs. deferred (mount/serve)
 
-This remote can't list or read back the library, so immediately after a
-`Put`, a `stat` or re-read of that same path would normally get
-"not found" — which is exactly the kind of thing that makes a mount
-client, or a client copying over `rclone serve`, think the write failed
-and retry it. To avoid that, a just-uploaded file's metadata **and actual
-bytes** are kept in a local cache and served back for `phantom_ttl`
-(default 5 minutes) after upload, via `List`, `NewObject`, and `Open`.
-Set `phantom_ttl` to at least your mount's `--dir-cache-time` /
-`--vfs-cache-max-age` so this lines up with how long your mount would
-otherwise expect that entry to stay valid.
+This backend automatically behaves differently depending on how it's
+being used — there is no config option to set:
 
-Separately, some clients (many SFTP/WebDAV clients driven through
-`rclone serve`) write to a temporary filename and then rename to the
-final name. Uploading the temporary file to Google would be wasteful and
-would litter the library, so actual upload to Google is deferred by
-`settle_time` (default 4s) after each write, and cancelled/superseded if
-that path is overwritten, renamed away from, or removed before the timer
-fires — only the final write for a given path actually reaches Google.
-This requires VFS caching (`--vfs-cache-mode writes` or `full`) to be
-effective end-to-end when mounting or serving. A clean `Shutdown`
-(unmount, or serve exiting normally) flushes any uploads still waiting out
-their settle time rather than dropping them.
+- **Plain commands** (`copy`/`sync`/`move`/...): every `Put` uploads to
+  Google **synchronously** — the call doesn't return until the file has
+  actually landed in the library. The process uploads each file in turn
+  and exits as soon as it's done, with no leftover background work.
+- **`rclone mount` / `rclone serve` / `rclone nfsmount`** (Docker
+  included), run with `--vfs-cache-mode writes` or `full`: a different
+  mode switches on automatically, where two problems show up that don't
+  matter for a one-shot `copy`:
+  1. This remote can't list or read back the library, so immediately
+     after a `Put`, a `stat` or re-read of that same path would normally
+     get "not found" — which is exactly the kind of thing that makes a
+     mount client, or a client copying over `rclone serve`, think the
+     write failed and retry it. In this mode, a just-uploaded file's
+     metadata **and actual bytes** are kept in a local cache and served
+     back for a while after upload, via `List`, `NewObject`, and `Open`.
+  2. Some clients (many SFTP/WebDAV clients driven through
+     `rclone serve`) write to a temporary filename and then rename to
+     the final name. Uploading the temporary file to Google would be
+     wasteful and would litter the library, so in this mode the actual
+     upload to Google is deferred for a while after each write, and
+     cancelled/superseded if that path is overwritten, renamed away
+     from, or removed before the timer fires — only the final write for
+     a given path actually reaches Google.
+
+Both the defer delay and the post-upload lingering window reuse rclone's
+own `--vfs-write-back` duration (default 5s) — the same setting you're
+already tuning for this exact purpose — so there's nothing gotohp-specific
+to configure. Detection itself is based on the global `--vfs-cache-mode`
+flag: it's how rclone tells backends "VFS is buffering your writes
+locally," which is also the actual precondition for deferring uploads to
+be correct, so a plain `copy`/`sync`/`move` (which never touches that
+flag) always gets the synchronous behavior with zero chance of an
+unwanted delay. A clean `Shutdown` (unmount, or serve exiting normally)
+flushes any uploads still waiting out their defer delay rather than
+dropping them.
+
+The one edge case this doesn't cover: a single rclone process (via
+`rclone rcd` or `librclone`) running multiple mounts/serves at once with
+*different* `--vfs-cache-mode` settings, since the flag is process-wide,
+not per-mount. This doesn't affect the common case of one `mount`/`serve`
+per process (e.g. one per Docker container).
 
 Google Photos also rejects (silently drops) uploaded bytes that don't
 look like a real supported photo/video, so test uploads must use a real
@@ -196,32 +218,6 @@ Properties:
 - Env Var:     RCLONE_GOTOHP_SKIP_EXISTING
 - Type:        bool
 - Default:     true
-
-### --gotohp-phantom-ttl
-
-How long a just-uploaded file keeps appearing in listings/stats/reads.
-
-See "Why files linger after upload" above.
-
-Properties:
-
-- Config:      phantom_ttl
-- Env Var:     RCLONE_GOTOHP_PHANTOM_TTL
-- Type:        Duration
-- Default:     5m0s
-
-### --gotohp-settle-time
-
-How long to wait after a write before actually uploading to Google.
-
-See "Why files linger after upload" above.
-
-Properties:
-
-- Config:      settle_time
-- Env Var:     RCLONE_GOTOHP_SETTLE_TIME
-- Type:        Duration
-- Default:     4s
 
 ## Limitations
 

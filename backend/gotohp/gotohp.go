@@ -23,7 +23,15 @@ import (
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/vfs/vfscommon"
 )
+
+// defaultLingerDuration is the fallback used for both the pre-upload
+// settle delay and the post-upload phantom-cache lifetime when
+// vfscommon.Opt.WriteBack hasn't been set to anything (shouldn't normally
+// happen once deferred mode is on, since mount/serve always populate it,
+// but zero would otherwise mean "upload/expire instantly").
+const defaultLingerDuration = 5 * time.Second
 
 func init() {
 	fs.Register(&fs.RegInfo{
@@ -82,45 +90,17 @@ When unset (the default), paths are used to route uploads instead:
 Since this remote can't list or read back the library, rclone's usual
 skip-if-exists logic can't run — this performs the equivalent check
 per-file against Google's hash index before uploading.`,
-		}, {
-			Name:     "phantom_ttl",
-			Advanced: true,
-			Default:  fs.Duration(5 * time.Minute),
-			Help: `How long a just-uploaded file keeps appearing in listings/stats/reads.
-
-Google Photos has no read-back API, so this remote can't normally answer
-"does this file exist" or "give me its bytes" after upload. To avoid mount
-or serve clients that verify a write by immediately statting or reading it
-back (and spuriously retrying when they get ENOENT), recently-uploaded
-files are kept visible — including their real content, for Open() — in a
-local cache for this long after upload. Set this to at least your
---dir-cache-time / --vfs-cache-max-age so the illusion holds for as long as
-a mount's own cache would anyway.`,
-		}, {
-			Name:     "settle_time",
-			Advanced: true,
-			Default:  fs.Duration(4 * time.Second),
-			Help: `How long to wait after a write before actually uploading to Google.
-
-Some clients (notably many SFTP/WebDAV clients via 'rclone serve') write to
-a temporary name and then rename to the final name. Without a settle delay
-this remote would upload the temporary file too. Uploads are deferred by
-this long and cancelled/superseded if the file is overwritten, renamed
-away from, or removed before the timer fires. This requires VFS caching
-(--vfs-cache-mode writes or full) to be effective end-to-end for mount/serve.`,
 		}},
 	})
 }
 
 // Options defines the configuration for this backend.
 type Options struct {
-	Auth         string      `config:"auth"`
-	Album        string      `config:"album"`
-	Quality      string      `config:"quality"`
-	UseQuota     bool        `config:"use_quota"`
-	SkipExisting bool        `config:"skip_existing"`
-	PhantomTTL   fs.Duration `config:"phantom_ttl"`
-	SettleTime   fs.Duration `config:"settle_time"`
+	Auth         string `config:"auth"`
+	Album        string `config:"album"`
+	Quality      string `config:"quality"`
+	UseQuota     bool   `config:"use_quota"`
+	SkipExisting bool   `config:"skip_existing"`
 }
 
 // albumMode identifies how a resolved path should be associated with an album.
@@ -151,7 +131,7 @@ type phantomEntry struct {
 	createdAt time.Time
 }
 
-// pendingUpload is a Put() awaiting its settle_time before the real Google
+// pendingUpload is a Put() awaiting its defer delay before the real Google
 // upload dance fires.
 type pendingUpload struct {
 	remote    string
@@ -167,11 +147,13 @@ type pendingUpload struct {
 
 // Fs represents a gotohp remote.
 type Fs struct {
-	name     string
-	root     string
-	opt      Options
-	features *fs.Features
-	client   *api.Client
+	name         string
+	root         string
+	opt          Options
+	features     *fs.Features
+	client       *api.Client
+	deferUploads bool          // auto-detected: --vfs-cache-mode is on, i.e. running under mount/serve
+	lingerFor    time.Duration // pre-upload settle delay and post-upload phantom lifetime when deferUploads
 
 	albumMu sync.Mutex
 	albums  map[string]string // album name -> album media key, "NewAlbum"/config-album create-or-get cache
@@ -205,15 +187,31 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		return nil, fmt.Errorf("gotohp: failed to create local spool directory: %w", err)
 	}
 
+	// Deferred uploads + the phantom lingering cache are only useful (and
+	// only correct) under mount/serve, and only auto-detectable via the
+	// global --vfs-cache-mode flag those commands populate: rclone gives
+	// backends no other signal for "am I being driven by a VFS layer" (no
+	// context marker, no per-remote config). A plain copy/sync/move never
+	// touches this flag, so it stays at its true zero value (off) and this
+	// backend uploads synchronously, matching normal command semantics
+	// with no gotohp-specific configuration required. See docs/content/gotohp.md.
+	deferUploads := vfscommon.Opt.CacheMode != vfscommon.CacheModeOff
+	lingerFor := time.Duration(vfscommon.Opt.WriteBack)
+	if lingerFor <= 0 {
+		lingerFor = defaultLingerDuration
+	}
+
 	f := &Fs{
-		name:       name,
-		root:       strings.Trim(root, "/"),
-		opt:        *opt,
-		client:     client,
-		albums:     map[string]string{},
-		phantomDir: spoolDir,
-		phantom:    map[string]*phantomEntry{},
-		pending:    map[string]*pendingUpload{},
+		name:         name,
+		root:         strings.Trim(root, "/"),
+		opt:          *opt,
+		client:       client,
+		deferUploads: deferUploads,
+		lingerFor:    lingerFor,
+		albums:       map[string]string{},
+		phantomDir:   spoolDir,
+		phantom:      map[string]*phantomEntry{},
+		pending:      map[string]*pendingUpload{},
 	}
 	f.features = (&fs.Features{
 		CanHaveEmptyDirectories: false,
@@ -296,7 +294,7 @@ func (f *Fs) removePhantom(remote string) {
 }
 
 func (f *Fs) sweepPhantom() {
-	ttl := time.Duration(f.opt.PhantomTTL)
+	ttl := f.lingerFor
 	cutoff := time.Now().Add(-ttl)
 	f.phantomMu.Lock()
 	for remote, entry := range f.phantom {
@@ -311,8 +309,13 @@ func (f *Fs) sweepPhantom() {
 }
 
 // List returns recently-uploaded (still-lingering) entries under dir; this
-// remote has no real remote listing capability.
+// remote has no real remote listing capability. Only meaningful when
+// deferred uploads are enabled (auto-detected, see NewFs) — otherwise nothing is
+// ever kept around to list.
 func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
+	if !f.deferUploads {
+		return fs.DirEntries{}, nil
+	}
 	f.sweepPhantom()
 	f.phantomMu.Lock()
 	defer f.phantomMu.Unlock()
@@ -345,8 +348,12 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 }
 
 // NewObject finds an object recently uploaded under this remote, if it's
-// still within its lingering window.
+// still within its lingering window. Only meaningful when deferred uploads
+// are enabled (auto-detected, see NewFs).
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
+	if !f.deferUploads {
+		return nil, fs.ErrorObjectNotFound
+	}
 	f.sweepPhantom()
 	entry, ok := f.getPhantom(remote)
 	if !ok {
@@ -372,9 +379,12 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error { return nil }
 // here are synthetic.
 func (f *Fs) Rmdir(ctx context.Context, dir string) error { return nil }
 
-// Put spools in to a local temp file, makes the write immediately visible
-// via the phantom cache, and schedules the real Google upload after
-// settle_time (see the "settle_time" option).
+// Put spools in to a local temp file, then either uploads it to Google
+// synchronously (the default — right for one-shot commands like copy/sync,
+// which exit as soon as the transfer finishes) or, if deferred uploads are
+// enabled (auto-detected via --vfs-cache-mode, meant for mount/serve), makes the write
+// immediately visible via the phantom cache and schedules the real upload
+// after a defer delay instead.
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
 	if src.Size() == 0 {
 		return nil, fs.ErrorCantUploadEmptyFiles
@@ -385,17 +395,7 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	if err != nil {
 		return nil, err
 	}
-
 	modTime := src.ModTime(ctx)
-	entry := &phantomEntry{
-		size:      size,
-		modTime:   modTime,
-		sha1:      sha1Sum,
-		localPath: localPath,
-		createdAt: time.Now(),
-	}
-	f.setPhantom(remote, entry)
-
 	rp := f.resolvePath(remote)
 	pu := &pendingUpload{
 		remote:    remote,
@@ -407,8 +407,24 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		mode:      rp.mode,
 		albumRef:  rp.albumRef,
 	}
-	f.schedulePending(remote, pu)
 
+	if !f.deferUploads {
+		defer func() { _ = os.Remove(localPath) }()
+		if _, err := f.uploadToGoogle(ctx, pu); err != nil {
+			return nil, err
+		}
+		return &Object{f: f, remote: remote, size: size, modTime: modTime, sha1: sha1Sum}, nil
+	}
+
+	entry := &phantomEntry{
+		size:      size,
+		modTime:   modTime,
+		sha1:      sha1Sum,
+		localPath: localPath,
+		createdAt: time.Now(),
+	}
+	f.setPhantom(remote, entry)
+	f.schedulePending(remote, pu)
 	return f.newObject(remote, entry), nil
 }
 
@@ -436,8 +452,7 @@ func (f *Fs) schedulePending(remote string, pu *pendingUpload) {
 		old.timer.Stop()
 	}
 	f.pending[remote] = pu
-	delay := time.Duration(f.opt.SettleTime)
-	pu.timer = time.AfterFunc(delay, func() {
+	pu.timer = time.AfterFunc(f.lingerFor, func() {
 		f.firePending(remote, pu)
 	})
 	f.pendingMu.Unlock()
@@ -538,7 +553,7 @@ func (f *Fs) addToAlbum(ctx context.Context, mode albumMode, ref string, mediaKe
 }
 
 // removeObject implements Object.Remove: if the upload hasn't been
-// committed to Google yet (still within settle_time), it's cancelled
+// committed to Google yet (still within the defer delay), it's cancelled
 // locally at no network cost; otherwise deletion isn't possible (Google's
 // upload API has no remote-delete call).
 func (f *Fs) removeObject(remote string) error {
@@ -561,7 +576,7 @@ func (f *Fs) removeObject(remote string) error {
 	return fs.ErrorObjectNotFound
 }
 
-// Shutdown flushes any uploads still waiting out their settle_time so nothing
+// Shutdown flushes any uploads still waiting out their defer delay so nothing
 // is silently lost on a clean unmount/exit, then cleans up the spool directory.
 func (f *Fs) Shutdown(ctx context.Context) error {
 	f.pendingMu.Lock()
@@ -634,11 +649,14 @@ type readCloser struct {
 }
 
 // Open serves the locally-spooled bytes for a recent upload, if still
-// within its lingering window (see the "phantom_ttl" option). This is a
+// within its lingering window (see lingerFor / NewFs). This is a
 // write-only remote: reading is only possible during that window.
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
 	entry, ok := o.f.getPhantom(o.remote)
 	if !ok || entry.localPath == "" {
+		if !o.f.deferUploads {
+			return nil, errors.New("gotohp: this is a write-only remote; reading is not supported outside mount/serve (run with --vfs-cache-mode writes to get a brief post-upload read window)")
+		}
 		return nil, errors.New("gotohp: this is a write-only remote; reading is only possible briefly after upload, and that window has passed")
 	}
 	file, err := os.Open(entry.localPath)
@@ -668,7 +686,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 }
 
 // Update replaces this object's content, following the same spool +
-// phantom-cache + settle_time path as Put.
+// phantom-cache + defer-delay path as Put.
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
 	newObj, err := o.f.Put(ctx, in, src, options...)
 	if err != nil {

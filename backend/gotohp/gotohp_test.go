@@ -8,26 +8,54 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/configmap"
+	"github.com/rclone/rclone/vfs/vfscommon"
 )
 
 func testAuthString() string {
 	return "androidId=abc123&app=com.google.android.apps.photos&client_sig=sig&Email=test@example.com&Token=tok&lang=en_US&service=oauth2:https://www.googleapis.com/auth/photos.native"
 }
 
-// newTestFs builds a real *Fs (NewFs does no network I/O) for exercising
-// pure logic — path routing and the phantom cache — without ever talking to
-// Google. Option defaults are normally injected by a layered configmap.Map
-// (PriorityDefault) that fs.NewFs builds around the config; a bare
-// configmap.Simple skips that, so defaults relied on by these tests are
-// set explicitly here instead.
+// newTestFs builds a real *Fs (NewFs does no network I/O) with deferred
+// uploads active, simulating what NewFs auto-detects when running under
+// mount/serve (--vfs-cache-mode writes or full) — see NewFs's use of
+// vfscommon.Opt. Used by tests exercising the phantom-cache mechanism
+// itself; production toggling of deferUploads is covered separately by
+// TestDeferUploadsDefaultIsFalse / TestDeferUploadsAutoDetectedFromVFSCacheMode.
 func newTestFs(t *testing.T, root string) *Fs {
 	t.Helper()
-	m := configmap.Simple{
-		"auth":        testAuthString(),
-		"phantom_ttl": "5m",
-		"settle_time": "4s",
+	prevMode := vfscommon.Opt.CacheMode
+	prevWriteBack := vfscommon.Opt.WriteBack
+	vfscommon.Opt.CacheMode = vfscommon.CacheModeWrites
+	vfscommon.Opt.WriteBack = fs.Duration(5 * time.Minute)
+	t.Cleanup(func() {
+		vfscommon.Opt.CacheMode = prevMode
+		vfscommon.Opt.WriteBack = prevWriteBack
+	})
+
+	m := configmap.Simple{"auth": testAuthString()}
+	f, err := NewFs(context.Background(), "test", root, m)
+	if err != nil {
+		t.Fatalf("NewFs: %v", err)
 	}
+	gf, ok := f.(*Fs)
+	if !ok {
+		t.Fatalf("NewFs returned %T, want *Fs", f)
+	}
+	if !gf.deferUploads {
+		t.Fatal("expected deferUploads to be auto-detected as true with vfscommon.Opt.CacheMode = writes")
+	}
+	t.Cleanup(func() { _ = gf.Shutdown(context.Background()) })
+	return gf
+}
+
+// newSyncTestFs builds a real *Fs with deferred uploads left off, matching
+// a plain copy/sync/move process where vfscommon.Opt.CacheMode is never
+// touched (stays at its Go zero value, CacheModeOff).
+func newSyncTestFs(t *testing.T, root string) *Fs {
+	t.Helper()
+	m := configmap.Simple{"auth": testAuthString()}
 	f, err := NewFs(context.Background(), "test", root, m)
 	if err != nil {
 		t.Fatalf("NewFs: %v", err)
@@ -180,7 +208,7 @@ func TestPhantomCacheLifecycle(t *testing.T) {
 
 func TestSweepPhantomExpiry(t *testing.T) {
 	f := newTestFs(t, "")
-	f.opt.PhantomTTL = 0 // anything not "createdAt.Before(cutoff)" false immediately
+	f.lingerFor = 0 // anything not "createdAt.Before(cutoff)" false immediately
 
 	tmp, err := os.CreateTemp(f.phantomDir, "test-*")
 	if err != nil {
@@ -227,6 +255,58 @@ func TestListSynthesizesDirsAndObjects(t *testing.T) {
 	}
 	if !sawObj {
 		t.Error("expected loose.jpg object entry")
+	}
+}
+
+func TestDeferUploadsDefaultIsFalse(t *testing.T) {
+	// A plain copy/sync/move process never touches --vfs-cache-mode, so
+	// vfscommon.Opt.CacheMode stays at its Go zero value (CacheModeOff) —
+	// exactly what a fresh test binary also has, with no mutation needed.
+	gf := newSyncTestFs(t, "")
+	if gf.deferUploads {
+		t.Error("deferUploads should default to false when --vfs-cache-mode was never set (synchronous mode)")
+	}
+}
+
+func TestDeferUploadsAutoDetectedFromVFSCacheMode(t *testing.T) {
+	// This is exactly what newTestFs sets up; assert it explicitly here too
+	// so the auto-detection wiring in NewFs itself has a direct test.
+	gf := newTestFs(t, "")
+	if !gf.deferUploads {
+		t.Error("deferUploads should be true when vfscommon.Opt.CacheMode is not off")
+	}
+	if gf.lingerFor != 5*time.Minute {
+		t.Errorf("lingerFor = %v, want 5m (from vfscommon.Opt.WriteBack)", gf.lingerFor)
+	}
+}
+
+func TestSyncModeIgnoresPhantomCache(t *testing.T) {
+	gf := newSyncTestFs(t, "")
+
+	if gf.deferUploads {
+		t.Fatal("deferUploads should be false in sync mode")
+	}
+
+	// Even if something ended up in the phantom map, sync mode must not
+	// surface it via List/NewObject/Open — those should behave as a plain
+	// write-only remote with nothing lingering.
+	gf.setPhantom("photo.jpg", &phantomEntry{size: 1, modTime: time.Now(), createdAt: time.Now()})
+
+	entries, err := gf.List(context.Background(), "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("List returned %d entries in sync mode, want 0", len(entries))
+	}
+
+	if _, err := gf.NewObject(context.Background(), "photo.jpg"); err != fs.ErrorObjectNotFound {
+		t.Errorf("NewObject error = %v, want fs.ErrorObjectNotFound", err)
+	}
+
+	obj := &Object{f: gf, remote: "photo.jpg", size: 1, modTime: time.Now()}
+	if _, err := obj.Open(context.Background()); err == nil {
+		t.Error("expected Open to fail in sync mode")
 	}
 }
 
