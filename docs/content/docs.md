@@ -43,6 +43,7 @@ See the following for detailed instructions for
 - [DigitalOcean Spaces](/s3/#digitalocean-spaces)
 - [Digi Storage](/koofr/#digi-storage)
 - [Dropbox](/dropbox/)
+- [e621](/e621/)
 - [Enterprise File Fabric](/filefabric/)
 - [FileLu Cloud Storage](/filelu/)
 - [Files.com](/filescom/)

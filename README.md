@@ -1,5 +1,5 @@
 > ⚠️ **Unofficial Fork Disclaimer**  
-> This is an **unofficial fork** of [rclone](https://rclone.org), with additional enhancements such as **Alist**, **Alldebrid**, **iCloud Photos**, **Teldrive**, **Terabox**, **Tmpfs**, and unofficial write-only **Google Photos** (gotohp) support.  
+> This is an **unofficial fork** of [rclone](https://rclone.org), with additional enhancements such as **Alist**, **Alldebrid**, **iCloud Photos**, **Teldrive**, **Terabox**, **Tmpfs**, unofficial write-only **Google Photos** (gotohp) support, and an **e621** API-based booru browser.  
 > I am **not affiliated with the upstream maintainers**, and this fork **does not intend to be malicious or harmful** in any way.  
 > Please **read the source code** if you're unsure or want to verify that it behaves as described.  
 > Contributions, feedback, and scrutiny are welcome.
@@ -56,6 +56,7 @@ directories to and from different cloud storage providers.
   * Digi Storage [:page_facing_up:](https://rclone.org/koofr/#digi-storage)
   * Dreamhost [:page_facing_up:](https://rclone.org/s3/#dreamhost)
   * Dropbox [:page_facing_up:](https://rclone.org/dropbox/)
+  * e621 (API-based booru browser) [:page_facing_up:](https://rclone.org/e621/)
   * Enterprise File Fabric [:page_facing_up:](https://rclone.org/filefabric/)
   * Fastmail Files [:page_facing_up:](https://rclone.org/webdav/#fastmail-files)
   * Files.com [:page_facing_up:](https://rclone.org/filescom/)
