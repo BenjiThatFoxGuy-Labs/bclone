@@ -147,7 +147,7 @@ jobs:
             EXTRA_MATRIX="[]"
           fi
 
-          if [ "$CI_LINUX_ONLY" = "true" ]; then
+          if [ "$CI_LINUX_ONLY" = "true" ] && [ "$MODE" != "release" ]; then
             EXTRA_MATRIX="[]"
             echo "CI_LINUX_ONLY enabled"
           fi
