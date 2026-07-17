@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  CI_LINUX_ONLY: "true"
+  CI_LINUX_ONLY: "false"
   DEBIAN_FRONTEND: noninteractive
   CI_LINUX_BOOTSTRAP_PACKAGES: >-
     build-essential ca-certificates curl fuse3 git git-annex
