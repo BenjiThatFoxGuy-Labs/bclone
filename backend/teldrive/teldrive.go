@@ -143,15 +143,16 @@ type Fs struct {
 
 // Object represents an teldrive object
 type Object struct {
-	fs       *Fs
-	remote   string
-	id       string
-	size     int64
-	parentId string
-	name     string
-	modTime  time.Time
-	mimeType string
-	hash     string // BLAKE3 tree hash from server
+	fs               *Fs
+	remote           string
+	id               string
+	size             int64
+	parentId         string
+	name             string
+	modTime          time.Time
+	mimeType         string
+	hash             string // BLAKE3 tree hash from server
+	referencedFileId string // canonical file ID if this is a deduplicated reference (BDrive)
 }
 
 // Name of the remote (as passed into NewFs)
@@ -273,6 +274,7 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		CanHaveEmptyDirectories: true,
 		ReadMimeType:            true,
 		ChunkWriterDoesntSeek:   true,
+		ReadMetadata:            true,
 	}).Fill(ctx, f)
 
 	client := fshttp.NewClient(ctx)
@@ -517,15 +519,16 @@ func (f *Fs) newObjectWithInfo(_ context.Context, remote string, info *api.FileI
 		return nil, fs.ErrorObjectNotFound
 	}
 	o := &Object{
-		fs:       f,
-		remote:   remote,
-		id:       info.Id,
-		size:     info.Size,
-		parentId: info.ParentId,
-		name:     info.Name,
-		modTime:  info.ModTime,
-		mimeType: info.MimeType,
-		hash:     info.Hash,
+		fs:               f,
+		remote:           remote,
+		id:               info.Id,
+		size:             info.Size,
+		parentId:         info.ParentId,
+		name:             info.Name,
+		modTime:          info.ModTime,
+		mimeType:         info.MimeType,
+		hash:             info.Hash,
+		referencedFileId: info.ReferencedFileId,
 	}
 	if info.Type == "folder" {
 		return o, fs.ErrorIsDir
@@ -1408,6 +1411,17 @@ func (o *Object) Storable() bool {
 	return true
 }
 
+// Metadata returns metadata for an object
+//
+// It should return nil if there is no Metadata
+func (o *Object) Metadata(ctx context.Context) (fs.Metadata, error) {
+	metadata := make(fs.Metadata)
+	if o.referencedFileId != "" {
+		metadata.Set("referenced-file-id", o.referencedFileId)
+	}
+	return metadata, nil
+}
+
 // SetModTime sets the modification time of the local fs object
 func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	updateInfo := &api.UpdateFileInformation{
@@ -1436,6 +1450,7 @@ var (
 	_ fs.DirMover        = (*Fs)(nil)
 	_ fs.Object          = (*Object)(nil)
 	_ fs.MimeTyper       = &Object{}
+	_ fs.Metadataer      = (*Object)(nil)
 	_ fs.OpenChunkWriter = (*Fs)(nil)
 	_ fs.IDer            = (*Object)(nil)
 	_ fs.DirCacheFlusher = (*Fs)(nil)

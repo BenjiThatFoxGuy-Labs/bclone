@@ -26,14 +26,15 @@ type Part struct {
 
 // FileInfo represents a file when listing folder contents
 type FileInfo struct {
-	Id       string    `json:"id"`
-	Name     string    `json:"name"`
-	MimeType string    `json:"mimeType"`
-	Size     int64     `json:"size"`
-	ParentId string    `json:"parentId"`
-	Type     string    `json:"type"`
-	ModTime  time.Time `json:"updatedAt"`
-	Hash     string    `json:"hash"`
+	Id               string    `json:"id"`
+	Name             string    `json:"name"`
+	MimeType         string    `json:"mimeType"`
+	Size             int64     `json:"size"`
+	ParentId         string    `json:"parentId"`
+	Type             string    `json:"type"`
+	ModTime          time.Time `json:"updatedAt"`
+	Hash             string    `json:"hash"`
+	ReferencedFileId string    `json:"referencedFileId,omitempty"`
 }
 
 type Meta struct {
