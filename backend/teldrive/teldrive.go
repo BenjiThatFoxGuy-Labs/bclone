@@ -769,6 +769,11 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 	o.modTime = modTime
 	o.size = size
+	// The content changed, so the cached tree hash and any deduplication link the
+	// server had recorded for the old content are both stale. Drop them so Hash
+	// and Metadata re-read from the server instead of reporting the old file's.
+	o.hash = ""
+	o.referencedFileId = ""
 
 	return nil
 }
